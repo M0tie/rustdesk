@@ -117,6 +117,7 @@ class MainActivity : FlutterActivity() {
             // Android can drop modifier-first input when the native view has no focus.
             findViewById<FlutterView>(FlutterActivity.FLUTTER_VIEW_ID)?.requestFocus()
         }
+        HwKeyboard.remap(event)?.let { return super.dispatchKeyEvent(it) }
         return super.dispatchKeyEvent(event)
     }
 
@@ -288,6 +289,7 @@ class MainActivity : FlutterActivity() {
     private fun initFlutterChannel(flutterMethodChannel: MethodChannel) {
         flutterMethodChannel.setMethodCallHandler { call, result ->
             if (documentPicker.handle(call, result)) return@setMethodCallHandler
+            if (HwKeyboard.handle(this, call, result)) return@setMethodCallHandler
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
                 "init_service" -> {

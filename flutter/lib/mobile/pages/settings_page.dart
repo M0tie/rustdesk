@@ -20,6 +20,7 @@ import '../../models/platform_model.dart';
 import '../widgets/deploy_dialog.dart';
 import '../../models/shortcut_model.dart';
 import '../widgets/dialog.dart';
+import '../widgets/hw_keyboard.dart';
 import 'home_page.dart';
 import 'mobile_keyboard_shortcuts_page.dart';
 import 'scan_page.dart';
@@ -736,6 +737,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
     final settings = SettingsList(
       sections: [
         customClientSection,
+        if (isAndroid && !bind.isIncomingOnly())
+          CustomSettingsSection(child: HwKeyboardSettings()),
         if (!bind.isDisableAccount())
           SettingsSection(
             title: Text(translate('Account')),

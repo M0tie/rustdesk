@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">RustDesk</string>
     <string name="accessibility_service_description">Allow other devices to control your phone using virtual touch, when RustDesk screen sharing is established</string>
+    <string name="key_capture_service_description">While you control another computer from RustDesk, send shortcuts such as Win and Alt+Tab from your physical keyboard to that computer instead of to this device. Not used at any other time.</string>
     <string name="foreground_service_special_use_subtype">Keeps the RustDesk remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
 </resources>

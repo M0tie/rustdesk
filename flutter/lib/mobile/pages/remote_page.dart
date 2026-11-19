@@ -25,6 +25,7 @@ import '../../models/shortcut_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../widgets/hw_keyboard.dart';
 
 final initText = '1' * 1024;
 
@@ -138,6 +139,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
     HardwareKeyboard.instance.addHandler(_handleLocalKeyEvent);
+    hwKeyboardSessionChanged(true);
     gFFI.inputModel.listenToMouse(true);
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     keyboardSubscription =
@@ -187,6 +189,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   Future<void> dispose() async {
     HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
+    hwKeyboardSessionChanged(false);
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
@@ -284,6 +287,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       );
 
   void onSoftKeyboardChanged(bool visible) {
+    if (visible &&
+        !_showEdit &&
+        !gFFI.chatModel.softKeyboardRequested.value &&
+        hwKeyboardIsUnrequestedSoftKeyboard()) {
+      _timer?.cancel();
+      hwKeyboardHideSoftKeyboard();
+      return;
+    }
     if (!visible) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
