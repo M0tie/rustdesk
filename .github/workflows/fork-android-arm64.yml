@@ -137,7 +137,7 @@ jobs:
         run: |
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/fork.keystore"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/fork.keystore"
             cat > ./flutter/android/key.properties <<EOF
           storeFile=$RUNNER_TEMP/fork.keystore
           storePassword=$KEYSTORE_PASSWORD

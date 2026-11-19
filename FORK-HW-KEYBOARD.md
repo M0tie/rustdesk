@@ -7,10 +7,11 @@ self-contained; existing files only get one-line hooks.
 | File | Change |
 | --- | --- |
 | `flutter/android/.../HwKeyboard.kt` | new: window keyboard capture, accessibility capture routing, remaps |
+| `flutter/android/.../HwTrackpad.kt` | new: touchpad events re-tagged as mouse, two-finger swipe → wheel |
 | `flutter/android/.../KeyCaptureService.kt` + `res/xml/key_capture_service_config.xml` | new: opt-in accessibility key filter |
 | `flutter/lib/mobile/widgets/hw_keyboard.dart` | new: options, session hook, soft-keyboard guard, Settings section |
 | `AndroidManifest.xml` | `CAPTURE_KEYBOARD` permission, `KeyCaptureService` declaration |
-| `MainActivity.kt` | 2 hook lines (method channel, `dispatchKeyEvent` remap) |
+| `MainActivity.kt` | hook lines: method channel, `dispatchKeyEvent` remap, `dispatchTouchEvent` / `dispatchGenericMotionEvent` trackpad |
 | `remote_page.dart` | session start/stop hook, unrequested soft-keyboard guard |
 | `settings_page.dart` | "Physical keyboard" section |
 | `.github/workflows/fork-android-arm64.yml` | arm64-only APK build |
@@ -22,6 +23,8 @@ self-contained; existing files only get one-line hooks.
 
 ## Settings (Settings → Physical keyboard)
 
+- **Use touchpad as mouse** (on): pointer moves the remote mouse, pad click = left,
+  two-finger click = right, two-finger swipe = wheel. Pinch stays local zoom.
 - **Send system shortcuts to remote** (on): during a session, Android 16 QPR2+ window
   keyboard capture; otherwise routes keys through the accessibility service if enabled.
 - **Keyboard capture service**: opens Accessibility settings to enable

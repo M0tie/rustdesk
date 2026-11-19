@@ -12,6 +12,7 @@ import '../../models/platform_model.dart';
 const kOptionHwKeyboardCapture = 'android-hw-keyboard-capture';
 const kOptionHwKeyboardRemap = 'android-hw-keyboard-remap';
 const kOptionHwKeyboardHideSoft = 'android-hw-keyboard-hide-soft';
+const kOptionHwTrackpadMouse = 'android-trackpad-as-mouse';
 
 bool _hwKeyboardOption(String key, bool defaultValue) {
   final v = bind.mainGetLocalOption(key: key);
@@ -24,6 +25,8 @@ bool get hwKeyboardRemapEnabled =>
     _hwKeyboardOption(kOptionHwKeyboardRemap, false);
 bool get hwKeyboardHideSoftEnabled =>
     _hwKeyboardOption(kOptionHwKeyboardHideSoft, true);
+bool get hwTrackpadMouseEnabled =>
+    _hwKeyboardOption(kOptionHwTrackpadMouse, true);
 
 void hwKeyboardSessionChanged(bool active) {
   if (!isAndroid) return;
@@ -31,6 +34,7 @@ void hwKeyboardSessionChanged(bool active) {
     'active': active,
     'capture': hwKeyboardCaptureEnabled,
     'remap': hwKeyboardRemapEnabled,
+    'trackpad': hwTrackpadMouseEnabled,
   });
 }
 
@@ -102,6 +106,12 @@ class _HwKeyboardSettingsState extends State<HwKeyboardSettings>
     return SettingsSection(
       title: Text(translate('Physical keyboard')),
       tiles: [
+        SettingsTile.switchTile(
+          initialValue: hwTrackpadMouseEnabled,
+          title: _title('Use touchpad as mouse',
+              'Keyboard cover touchpad moves the remote mouse: click = left, two-finger click = right, two-finger swipe = scroll wheel.'),
+          onToggle: (v) => _set(kOptionHwTrackpadMouse, v),
+        ),
         SettingsTile.switchTile(
           initialValue: hwKeyboardCaptureEnabled,
           title: _title('Send system shortcuts to remote',

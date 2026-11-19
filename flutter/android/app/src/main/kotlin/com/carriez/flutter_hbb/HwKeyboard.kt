@@ -57,6 +57,7 @@ object HwKeyboard {
                 activityRef = if (active) WeakReference(activity) else null
                 captureActive = capture
                 remapActive = active && call.argument<Boolean>("remap") == true
+                HwTrackpad.active = active && call.argument<Boolean>("trackpad") == true
                 setWindowKeyboardCapture(activity, capture)
                 result.success(true)
             }

@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -120,6 +121,12 @@ class MainActivity : FlutterActivity() {
         HwKeyboard.remap(event)?.let { return super.dispatchKeyEvent(it) }
         return super.dispatchKeyEvent(event)
     }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean =
+        HwTrackpad.dispatch(event, { super.dispatchTouchEvent(it) }, { super.dispatchGenericMotionEvent(it) })
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean =
+        HwTrackpad.dispatch(event, { super.dispatchGenericMotionEvent(it) }, { super.dispatchGenericMotionEvent(it) })
 
     private fun requestMediaProjection() {
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
