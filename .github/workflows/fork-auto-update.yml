@@ -1,0 +1,407 @@
+# Fork-only updater. Lives on the default branch because GitHub only runs scheduled
+# workflows from there. Plain-language guide: .github/FORK-UPDATES.md
+#
+# Once a day: if rustdesk/rustdesk has a release this fork has not built yet, put the
+# commits of branch `android-hw-keyboard` on top of it, build the arm64 APK and publish
+# it as a release of this fork (tag = upstream version, e.g. 1.5.4). Obtainium on the
+# tablet installs it from this repository's Releases page.
+#
+# If something fails, an issue "Auto-update to X failed" is opened and that version is
+# not retried until the issue is closed. The next upstream version is tried normally.
+name: Fork auto-update APK
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream release to build, e.g. 1.5.4 (empty = latest)"
+        type: string
+        default: ""
+      force:
+        description: "Rebuild even if this fork already has that release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: fork-auto-update
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: rustdesk/rustdesk
+  PATCH_BRANCH: android-hw-keyboard
+  APP_ID_SUFFIX: ".keeb"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      tag: ${{ steps.check.outputs.tag }}
+      conflict: ${{ steps.rebase.outputs.conflict }}
+      rust: ${{ steps.versions.outputs.rust }}
+      flutter: ${{ steps.versions.outputs.flutter }}
+      ndk: ${{ steps.versions.outputs.ndk }}
+      cargo_ndk: ${{ steps.versions.outputs.cargo_ndk }}
+      vcpkg: ${{ steps.versions.outputs.vcpkg }}
+      bridge_rust: ${{ steps.versions.outputs.bridge_rust }}
+      bridge_flutter: ${{ steps.versions.outputs.bridge_flutter }}
+      frb: ${{ steps.versions.outputs.frb }}
+      cargo_expand: ${{ steps.versions.outputs.cargo_expand }}
+    steps:
+      - name: Keep this scheduled workflow from being auto-disabled
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/fork-auto-update.yml/enable" || true
+
+      - name: Find upstream release
+        id: check
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view -R "$UPSTREAM" --json tagName -q .tagName)
+          fi
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected upstream tag '$TAG'"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          BUILD=true
+          if [ "$INPUT_FORCE" != "true" ]; then
+            if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "This fork already has release $TAG. Nothing to do."
+              BUILD=false
+            elif gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 100 --json title -q '.[].title' \
+                | grep -Fxq "Auto-update to $TAG failed"; then
+              echo "Issue 'Auto-update to $TAG failed' is open. Close it to retry."
+              BUILD=false
+            fi
+          fi
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "Upstream $TAG, build=$BUILD" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout patch branch
+        if: steps.check.outputs.build == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+
+      - name: Put the patches on top of the release
+        if: steps.check.outputs.build == 'true'
+        id: rebase
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          git fetch --no-tags "https://github.com/$UPSTREAM.git" "+refs/tags/*:refs/tags/*"
+          OLD=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' HEAD)
+          echo "Patches are based on $OLD, target is $TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$OLD" != "$TAG" ] && ! git rebase --onto "$TAG" "$OLD"; then
+            FILES=$(git diff --name-only --diff-filter=U)
+            git rebase --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "The patches do not apply cleanly to $TAG. Conflicting files:"
+              echo '```'
+              echo "$FILES"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git submodule update --init --recursive
+          git log --oneline -n 5
+
+      - name: Read build tool versions of the release
+        if: steps.check.outputs.build == 'true'
+        id: versions
+        run: |
+          F=.github/workflows/flutter-build.yml
+          B=.github/workflows/bridge.yml
+          out() {
+            local v
+            v=$(yq "$2" "$3")
+            if [ -z "$v" ] || [ "$v" = "null" ]; then
+              echo "::error::Could not read $2 from $3"
+              exit 1
+            fi
+            echo "$1=$v" | tee -a "$GITHUB_OUTPUT"
+          }
+          out rust '.env.RUST_VERSION' $F
+          out flutter '.env.ANDROID_FLUTTER_VERSION' $F
+          out ndk '.env.NDK_VERSION' $F
+          out cargo_ndk '.env.CARGO_NDK_VERSION' $F
+          out vcpkg '.env.VCPKG_COMMIT_ID' $F
+          out bridge_rust '.env.RUST_VERSION' $B
+          out frb '.env.FLUTTER_RUST_BRIDGE_VERSION' $B
+          out cargo_expand '.env.CARGO_EXPAND_VERSION' $B
+          out bridge_flutter '.jobs.generate_bridge.strategy.matrix.job[] | select(.["artifact-name"] == "bridge-artifact") | .["flutter-version"]' $B
+
+      - name: Pack source
+        if: steps.check.outputs.build == 'true'
+        run: tar --exclude=.git -czf "$RUNNER_TEMP/source.tgz" .
+
+      - name: Upload source
+        if: steps.check.outputs.build == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source
+          path: ${{ runner.temp }}/source.tgz
+          retention-days: 3
+
+  bridge:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source
+          path: ${{ runner.temp }}
+
+      - name: Unpack source
+        run: tar -xzf "$RUNNER_TEMP/source.tgz"
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update -y
+          sudo apt-get -o Acquire::Retries=5 install -y clang cmake curl gcc git g++ \
+            libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.prepare.outputs.bridge_rust }}
+          targets: x86_64-unknown-linux-gnu
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: bridge-ubuntu-22.04
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ needs.prepare.outputs.bridge_flutter }}
+          cache: true
+
+      - name: Install flutter rust bridge deps
+        shell: bash
+        run: |
+          cargo install cargo-expand --version ${{ needs.prepare.outputs.cargo_expand }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ needs.prepare.outputs.frb }} --features "uuid" --locked
+          if [[ "${{ needs.prepare.outputs.bridge_flutter }}" == "3.22.3" ]]; then
+            sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          fi
+          pushd flutter && flutter pub get && popd
+
+      - name: Run flutter rust bridge
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+
+      - name: Upload bridge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bridge-artifact
+          retention-days: 3
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+
+  build:
+    needs: [prepare, bridge]
+    runs-on: ubuntu-24.04
+    env:
+      TARGET: aarch64-linux-android
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y clang cmake curl gcc-multilib git g++ g++-multilib \
+               libayatana-appindicator3-dev libasound2-dev libc6-dev libclang-dev \
+               libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+               libgtk-3-dev libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev \
+               libxcb-xfixes0-dev libxdo-dev libxfixes-dev llvm-dev nasm ninja-build \
+               openjdk-17-jdk-headless pkg-config tree wget
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source
+          path: ${{ runner.temp }}
+
+      - name: Unpack source
+        run: tar -xzf "$RUNNER_TEMP/source.tgz"
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ needs.prepare.outputs.flutter }}
+
+      - name: Patch flutter
+        run: |
+          P=${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          if [ "${{ needs.prepare.outputs.flutter }}" = "3.24.5" ] && [ -f "$P" ]; then
+            cd $(dirname $(dirname $(which flutter)))
+            git apply "$P"
+          fi
+
+      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ needs.prepare.outputs.ndk }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ needs.prepare.outputs.vcpkg }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! ./flutter/build_android_deps.sh arm64-v8a; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.prepare.outputs.rust }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: rustdesk-lib-cache-android
+          key: ${{ env.TARGET }}
+
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add ${{ env.TARGET }}
+          cargo install cargo-ndk --version ${{ needs.prepare.outputs.cargo_ndk }} --locked
+          ./flutter/ndk_arm64.sh
+
+      - name: Prepare signing and app id
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.FORK_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.FORK_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.FORK_ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Secret FORK_ANDROID_KEYSTORE_BASE64 is missing; refusing to publish an APK that cannot update the installed one."
+            exit 1
+          fi
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/fork.keystore"
+          cat > ./flutter/android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/fork.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEYSTORE_PASSWORD
+          EOF
+          sed -i "s/applicationId \"com.carriez.flutter_hbb\"/applicationId \"com.carriez.flutter_hbb${APP_ID_SUFFIX}\"/" ./flutter/android/app/build.gradle
+          sed -i 's#<string name="app_name">RustDesk</string>#<string name="app_name">RustDesk Keeb</string>#' ./flutter/android/app/src/main/res/values/strings.xml
+          grep -q "com.carriez.flutter_hbb${APP_ID_SUFFIX}" ./flutter/android/app/build.gradle
+
+      - name: Build rustdesk
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
+          cp ./target/${{ env.TARGET }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          popd
+          mkdir -p out
+          mv flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "out/rustdesk-$TAG-keeb-aarch64.apk"
+          ls -l out
+
+      - name: Publish release
+        run: |
+          APK="out/rustdesk-$TAG-keeb-aarch64.apk"
+          NOTES="Official RustDesk $TAG for Android (arm64) plus the tablet keyboard and trackpad changes from branch \`$PATCH_BRANCH\`. Installs over RustDesk Keeb as an update (Obtainium does this automatically)."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$APK" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "RustDesk Keeb $TAG" --notes "$NOTES" --latest
+          fi
+
+  report-failure:
+    needs: [prepare, bridge, build]
+    if: failure() && needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Open an issue
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CONFLICT: ${{ needs.prepare.outputs.conflict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Auto-update to $TAG failed"
+          if gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 100 --json title -q '.[].title' | grep -Fxq "$TITLE"; then
+            exit 0
+          fi
+          if [ "$CONFLICT" = "true" ]; then
+            WHY="RustDesk $TAG changed the same code the tablet patches change, so they could not be applied automatically. Fixing this needs someone to edit the code (branch \`$PATCH_BRANCH\`)."
+          else
+            WHY="The build failed. Often this is a temporary GitHub problem: close this issue and the next daily run tries again, or run the workflow manually (Actions -> Fork auto-update APK -> Run workflow). If it keeps failing, RustDesk $TAG probably changed how the Android app is built."
+          fi
+          gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body "$WHY
+
+          Details: $RUN_URL
+
+          Nothing changes on your tablet: RustDesk Keeb keeps working on the previous version, and the official RustDesk app is always an option. The next RustDesk release will be tried automatically.
+
+          See .github/FORK-UPDATES.md on the master branch for the full guide."
